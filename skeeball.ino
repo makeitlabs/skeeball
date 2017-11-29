@@ -1,8 +1,9 @@
 // SkeeBall Game
-// Peter Vatne, November 2017
+// Peter Vatne and Adam Shrey, November 2017
 // Animation routines from FastLED_Demo by Mark Kriegsman, December 2014
 
 #include "FastLED.h"
+FASTLED_USING_NAMESPACE
 
 #if FASTLED_VERSION < 3001000
 #error "Requires FastLED 3.1 or later; check github for latest code."
@@ -13,22 +14,37 @@
 #define STRIP2_DATA_PIN    9
 #define LED_TYPE    WS2811
 #define COLOR_ORDER GRB
-#define BRIGHTNESS          96
+#define BRIGHTNESS          200
 #define FRAMES_PER_SECOND  120
 #define MAXMILLIAMPS       2000
 
 // definitions for topology of LED strips
 // NUM_LEDS must equal NUM_SCORE_BAR_LEDS + NUM_STAR_LEDS
 // if not all leds light, try increasing MAXMILLIAMPS
-#define NUM_LEDS    24
-#define NUM_SCORE_BAR_LEDS 20
-#define NUM_STAR_LEDS 4
+#define NUM_LEDS    55
+#define NUM_SCORE_BAR_LEDS 50
+#define NUM_STAR_LEDS 5
 
 // definitions for the scoring switches
 #define INNER1_SWITCH_PIN  18
 #define OUTER1_SWITCH_PIN  19
 #define INNER2_SWITCH_PIN  20
 #define OUTER2_SWITCH_PIN  21
+
+int play0 = 0;
+int play1 = 0;
+int game_over=0;
+
+#define SOUND0 30
+#define SOUND1 31
+#define SOUND2 32
+#define SOUND3 33
+#define SOUND4 34
+#define SOUND5 35
+#define SOUND6 36
+#define SOUND7 37
+#define SOUND8 38
+#define SOUND9 39
 void inner1_switch_ISR();
 void outer1_switch_ISR();
 void inner2_switch_ISR();
@@ -62,8 +78,9 @@ int gGo2 = 0;               // PLAYER2's go button
 int gGo = 0;                // master go control
 
 // List of patterns to cycle through.  Each is defined as a separate function below.
-typedef void (*SimplePatternList[])(CRGB leds[], int num_leds);
-SimplePatternList gPatterns = { rainbow, sinelon, bpm, juggle, confetti, rainbowWithGlitter, winner};
+ //     typedef void (*SimplePatternList[])(CRGB leds[], int num_leds);
+ //     SimplePatternList gPatterns = { rainbow, sinelon, bpm, juggle, confetti, rainbowWithGlitter, winner};
+
 // Note: NUM_PATTERNS does not include the winner pattern
 #define NUM_PATTERNS 6
 
@@ -128,6 +145,7 @@ void bpm(CRGB leds[], int num_leds)
   }
 }
 
+
 void juggle(CRGB leds[], int num_leds) {
   // eight colored dots, weaving in and out of sync with each other
   fill_solid(leds, NUM_LEDS, CRGB::Black);
@@ -186,7 +204,7 @@ void inner1_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  
+ play1=1; 
   gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_INNER);
 }
 
@@ -200,7 +218,7 @@ void outer1_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  
+  play0=1;
   gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_OUTER);
 }
 
@@ -214,7 +232,7 @@ void inner2_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  
+  play1=1;
   gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_INNER);
 }
 
@@ -228,8 +246,9 @@ void outer2_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  
+  play0=1;
   gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_OUTER);
+ 
 }
 
 void go1_switch_ISR()
@@ -256,7 +275,6 @@ void go2_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  
   gGo2 = digitalRead(GO2_SWITCH_PIN);
 }
 
@@ -306,9 +324,10 @@ int score_to_pattern_number(int score)
   return NUM_PATTERNS * score / SCORE_MAX;
 }
 
+
 void setup()
 {
-  delay(3000); // 3 second delay for recovery
+  delay(500); // 3 second delay for recovery
   
   // tell FastLED about the LED strip configurations
   FastLED.addLeds<LED_TYPE,STRIP1_DATA_PIN,COLOR_ORDER>(gLeds[PLAYER1], NUM_LEDS).setCorrection(TypicalLEDStrip);
@@ -322,18 +341,47 @@ void setup()
 
   // initialize the leds to black
   FastLED.clear();
-  
-  // initialize the switches
+ // initialize the switches
   pinMode(INNER1_SWITCH_PIN, INPUT_PULLUP);
   pinMode(OUTER1_SWITCH_PIN, INPUT_PULLUP);
   pinMode(INNER2_SWITCH_PIN, INPUT_PULLUP);
   pinMode(OUTER2_SWITCH_PIN, INPUT_PULLUP);
   pinMode(GO1_SWITCH_PIN, INPUT_PULLUP);
   pinMode(GO2_SWITCH_PIN, INPUT_PULLUP);
+
+pinMode(SOUND0, OUTPUT);
+pinMode(SOUND1, OUTPUT);
+pinMode(SOUND2, OUTPUT);
+pinMode(SOUND3, OUTPUT);
+pinMode(SOUND4, OUTPUT);
+pinMode(SOUND5, OUTPUT);
+pinMode(SOUND6, OUTPUT);
+pinMode(SOUND7, OUTPUT);
+pinMode(SOUND8, OUTPUT);
+pinMode(SOUND9, OUTPUT);
+
+digitalWrite(SOUND0, HIGH);
+digitalWrite(SOUND1, HIGH);
+digitalWrite(SOUND2, HIGH);
+digitalWrite(SOUND3, HIGH);
+digitalWrite(SOUND4, HIGH);
+digitalWrite(SOUND5, HIGH);
+digitalWrite(SOUND6, HIGH);
+digitalWrite(SOUND7, HIGH);
+digitalWrite(SOUND8, HIGH);
+digitalWrite(SOUND9, HIGH);
+
+digitalWrite(SOUND0, LOW);
+delay(500);
+digitalWrite(SOUND0, HIGH);
+digitalWrite(SOUND1, LOW);
+delay(500);
+digitalWrite(SOUND1, HIGH);
+
   attachInterrupt(digitalPinToInterrupt(INNER1_SWITCH_PIN), inner1_switch_ISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(OUTER1_SWITCH_PIN), outer1_switch_ISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(INNER2_SWITCH_PIN), inner2_switch_ISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(OUTER2_SWITCH_PIN), outer1_switch_ISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(OUTER2_SWITCH_PIN), outer2_switch_ISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(GO1_SWITCH_PIN), go1_switch_ISR, RISING);
   attachInterrupt(digitalPinToInterrupt(GO2_SWITCH_PIN), go2_switch_ISR, RISING);
   
@@ -350,8 +398,29 @@ void setup()
   gCurrentPatternNumber[PLAYER2] = score_to_pattern_number(gScore[PLAYER2]);
 }
 
+
+// List of patterns to cycle through.  Each is defined as a separate function below.
+      typedef void (*SimplePatternList[])(CRGB leds[], int num_leds);
+      SimplePatternList gPatterns = { rainbow, sinelon, bpm, juggle, confetti, rainbowWithGlitter, winner};
+
 void loop()
 {
+
+
+  if(play0)
+  {
+    digitalWrite(SOUND0, LOW);
+    delay(200);
+    play0=0;
+    digitalWrite(SOUND0, HIGH);
+  }
+  if(play1)
+  {
+        digitalWrite(SOUND1, LOW);
+    delay(200);
+    play1=0;
+    digitalWrite(SOUND1, HIGH);
+  }
   // Call the current pattern function once, updating the 'gLeds' arrays
   gPatterns[gCurrentPatternNumber[PLAYER1]](gLeds[PLAYER1], gNumLeds[PLAYER1]);
   gPatterns[gCurrentPatternNumber[PLAYER2]](gLeds[PLAYER2], gNumLeds[PLAYER2]);
@@ -363,7 +432,7 @@ void loop()
 
   // do some periodic updates
   EVERY_N_MILLISECONDS( 20 ) { gHue++; } // slowly cycle the "base color" through the rainbow
-
+/*
   // reduce score every second based on current value of potentiometer
   // minimum reduction is 0, maximum reduction is 20 points per second
   read_pot1_val();
@@ -374,7 +443,7 @@ void loop()
     gScore[PLAYER1] = add_to_score(gScore[PLAYER1], -delta1);
     gScore[PLAYER2] = add_to_score(gScore[PLAYER2], -delta2);
   }
-  
+  */
   gNumLeds[PLAYER1] = score_to_number_of_leds(gScore[PLAYER1]);
   gNumLeds[PLAYER2] = score_to_number_of_leds(gScore[PLAYER2]);
 
@@ -388,7 +457,23 @@ void loop()
     Serial.print("\n");
   }
 #endif
-
+  if(game_over)
+  {
+    game_over=0;
+    delay(5000);
+    gScore[PLAYER1] = 0;
+  gScore[PLAYER2] = 0;
+  gGo1 =0;
+  gGo2 = 0;
+  gNumLeds[PLAYER1] = score_to_number_of_leds(gScore[PLAYER1]);
+  gNumLeds[PLAYER2] = score_to_number_of_leds(gScore[PLAYER2]);
+  gCurrentPatternNumber[PLAYER1] = score_to_pattern_number(gScore[PLAYER1]);
+  gCurrentPatternNumber[PLAYER2] = score_to_pattern_number(gScore[PLAYER2]);
+  }
+  if(gScore[PLAYER1]>=SCORE_MAX || gScore[PLAYER2] >= SCORE_MAX)
+  {
+    game_over=1;
+  }
   // go only when both Go buttons pressed.  Never stop after that.
   if (!gGo) {
     gGo = gGo1 && gGo2;
