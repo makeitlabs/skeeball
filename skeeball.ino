@@ -1,5 +1,5 @@
 // SkeeBall Game
-// Peter Vatne and Adam Shrey, November 2017
+// Peter Vatne, November 2017
 // Animation routines from FastLED_Demo by Mark Kriegsman, December 2014
 
 #include "FastLED.h"
@@ -35,16 +35,16 @@ int play0 = 0;
 int play1 = 0;
 int game_over=0;
 
-#define SOUND0 30
-#define SOUND1 31
-#define SOUND2 32
-#define SOUND3 33
-#define SOUND4 34
+#define SOUND0 30   //low point noise
+#define SOUND1 31   //high point noise
+#define SOUND2 32   //player 1
+#define SOUND3 33   //player 2
+#define SOUND4 34   //you win
 #define SOUND5 35
 #define SOUND6 36
 #define SOUND7 37
 #define SOUND8 38
-#define SOUND9 39
+#define SOUND9 39   //left right
 void inner1_switch_ISR();
 void outer1_switch_ISR();
 void inner2_switch_ISR();
@@ -76,6 +76,8 @@ int gPotVal[NUM_PLAYERS];   // value of "handicap" potentiometer
 int gGo1 = 0;               // PLAYER1's go button
 int gGo2 = 0;               // PLAYER2's go button
 int gGo = 0;                // master go control
+int p1_played=0;            // flag if player 1 start sound has been played
+int p2_played=0;            // flag if player 2 start sound has been played 
 
 // List of patterns to cycle through.  Each is defined as a separate function below.
  //     typedef void (*SimplePatternList[])(CRGB leds[], int num_leds);
@@ -204,7 +206,8 @@ void inner1_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
- play1=1; 
+ if(gGo)
+  play1=1; 
   gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_INNER);
 }
 
@@ -218,7 +221,8 @@ void outer1_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  play0=1;
+  if(gGo)
+    play0=1;
   gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_OUTER);
 }
 
@@ -232,7 +236,8 @@ void inner2_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  play1=1;
+  if(gGo)
+    play1=1;
   gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_INNER);
 }
 
@@ -246,7 +251,9 @@ void outer2_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  play0=1;
+  if(gGo)
+    play0=1;
+    
   gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_OUTER);
  
 }
@@ -262,7 +269,7 @@ void go1_switch_ISR()
   }
   last_interrupt_time = interrupt_time;
   
-  gGo1 = digitalRead(GO1_SWITCH_PIN);
+  gGo1 = 1;//digitalRead(GO1_SWITCH_PIN);
 }
 
 void go2_switch_ISR()
@@ -275,7 +282,7 @@ void go2_switch_ISR()
     return;
   }
   last_interrupt_time = interrupt_time;
-  gGo2 = digitalRead(GO2_SWITCH_PIN);
+  gGo2 = 1;//digitalRead(GO2_SWITCH_PIN);
 }
 
 void read_pot1_val()
@@ -377,7 +384,17 @@ digitalWrite(SOUND0, HIGH);
 digitalWrite(SOUND1, LOW);
 delay(500);
 digitalWrite(SOUND1, HIGH);
-
+digitalWrite(SOUND2, LOW);
+delay(500);
+digitalWrite(SOUND2, HIGH);
+delay(1000);
+digitalWrite(SOUND3, LOW);
+delay(500);
+digitalWrite(SOUND3, HIGH);
+delay(1000);
+digitalWrite(SOUND4, LOW);
+delay(1000);
+digitalWrite(SOUND4, HIGH);
   attachInterrupt(digitalPinToInterrupt(INNER1_SWITCH_PIN), inner1_switch_ISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(OUTER1_SWITCH_PIN), outer1_switch_ISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(INNER2_SWITCH_PIN), inner2_switch_ISR, FALLING);
@@ -460,11 +477,18 @@ void loop()
   if(game_over)
   {
     game_over=0;
+    delay(500);
+    digitalWrite(SOUND4, LOW);
+    delay(250);
+    digitalWrite(SOUND4, HIGH);
     delay(5000);
     gScore[PLAYER1] = 0;
   gScore[PLAYER2] = 0;
   gGo1 =0;
   gGo2 = 0;
+  gGo=0;
+  p1_played=0;
+  p2_played=0;
   gNumLeds[PLAYER1] = score_to_number_of_leds(gScore[PLAYER1]);
   gNumLeds[PLAYER2] = score_to_number_of_leds(gScore[PLAYER2]);
   gCurrentPatternNumber[PLAYER1] = score_to_pattern_number(gScore[PLAYER1]);
@@ -477,5 +501,22 @@ void loop()
   // go only when both Go buttons pressed.  Never stop after that.
   if (!gGo) {
     gGo = gGo1 && gGo2;
+    if(gGo1&&!p1_played)
+    {
+      digitalWrite(SOUND2, LOW);
+      delay(200);
+      digitalWrite(SOUND2, HIGH);
+      p1_played=1;
+    }
+        if(gGo2&&!p2_played)
+    {
+      digitalWrite(SOUND3, LOW);
+      delay(200);
+      digitalWrite(SOUND3, HIGH);
+      p2_played=1;
+    }
   }
 }
+  
+  
+
