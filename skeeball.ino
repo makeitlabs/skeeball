@@ -1,5 +1,7 @@
 // SkeeBall Game
 // Peter Vatne, November 2017
+// Adam Shrey, November 2017 Sound and fixes added
+// Peter Vatne, November 2018 V2 Added attract and countdown modes
 // Animation routines from FastLED_Demo by Mark Kriegsman, December 2014
 
 #include "FastLED.h"
@@ -9,61 +11,80 @@ FASTLED_USING_NAMESPACE
 #error "Requires FastLED 3.1 or later; check github for latest code."
 #endif
 
+// Global settings
+#define SOUND_POST 1
+#define DEBUG_SWITCHES 0
+#define DEBUG_POTS 0
+#define HANDICAP_DIALS 0
+#define RACING_LIGHTS 1
+
 // definitions for the LED strips
 #define STRIP1_DATA_PIN    8
 #define STRIP2_DATA_PIN    9
 #define LED_TYPE    WS2811
 #define COLOR_ORDER GRB
-#define BRIGHTNESS          200
+#define BRIGHTNESS         200
 #define FRAMES_PER_SECOND  120
 #define MAXMILLIAMPS       2000
 
 // definitions for topology of LED strips
 // NUM_LEDS must equal NUM_SCORE_BAR_LEDS + NUM_STAR_LEDS
 // if not all leds light, try increasing MAXMILLIAMPS
-#define NUM_LEDS    55
+#define NUM_LEDS           55
 #define NUM_SCORE_BAR_LEDS 50
-#define NUM_STAR_LEDS 5
+#define NUM_STAR_LEDS       5
 
 // definitions for the scoring switches
-#define INNER1_SWITCH_PIN  18
-#define OUTER1_SWITCH_PIN  19
-#define INNER2_SWITCH_PIN  20
-#define OUTER2_SWITCH_PIN  21
+#define INNER1_BUMPER_PIN  18
+#define OUTER1_BUMPER_PIN  19
+#define INNER2_BUMPER_PIN  20
+#define OUTER2_BUMPER_PIN  21
+#define DEBOUNCE_BUMPER_IN_MS 300UL
+void inner1_bumper_ISR();
+void outer1_bumper_ISR();
+void inner2_bumper_ISR();
+void outer2_bumper_ISR();
 
-int play0 = 0;
-int play1 = 0;
-int game_over=0;
-
-#define SOUND0 30   //low point noise
-#define SOUND1 31   //high point noise
-#define SOUND2 32   //player 1
-#define SOUND3 33   //player 2
-#define SOUND4 34   //you win
-#define SOUND5 35
-#define SOUND6 36
-#define SOUND7 37
-#define SOUND8 38
-#define SOUND9 39   //left right
-void inner1_switch_ISR();
-void outer1_switch_ISR();
-void inner2_switch_ISR();
-void outer2_switch_ISR();
+// definitions for sounds
+#define LOW_SCORE_SOUND 0
+#define HIGH_SCORE_SOUND 1
+#define PLAYER1_SOUND 2
+#define PLAYER2_SOUND 3
+#define YOU_WIN_SOUND 4
+#define NUM_SOUNDS 5
+int gCurrentSoundPin = 0;
+unsigned long gCurrentSoundTimeout = 0;
+int gNextSound = -1;
+#define LOW_SCORE_SOUND_PIN 30   //low point noise
+#define HIGH_SCORE_SOUND_PIN 31   //high point noise
+#define PLAYER1_SOUND_PIN 32   //player 1
+#define PLAYER2_SOUND_PIN 33   //player 2
+#define YOU_WIN_SOUND_PIN 34   //you win
+#define SOUND5_PIN 35
+#define SOUND6_PIN 36
+#define SOUND7_PIN 37
+#define SOUND8_PIN 38
+#define SOUND9_PIN 39   //left right ?
 
 // definitions for "GO" buttons
-#define GO1_SWITCH_PIN   2
-#define GO2_SWITCH_PIN   3
-void go1_switch_ISR();
-void go2_switch_ISR();
+#define GO1_BUTTON_PIN   2
+#define GO2_BUTTON_PIN   3
+#define DEBOUNCE_GO_BUTTON_IN_MS 300UL
+void go1_button_ISR();
+void go2_button_ISR();
 
 // Scores are large enough to allow scaling
 #define SCORE_INNER 50
-#define SCORE_OUTER 10
-#define SCORE_MAX 500
+#define SCORE_OUTER 20
+#define SCORE_COUNTDOWN -10
+#define SCORE_MAX 501
 
+#if HANDICAP_DIALS
 // definitions for the handicap potentiometers
 #define POT1_PIN    A2
 #define POT2_PIN    A3
+#define DEBOUNCE_POT_IN_MS 300UL
+#endif // HANDICAP_DIALS
 
 // the per-player variables
 #define PLAYER1      0
@@ -71,13 +92,26 @@ void go2_switch_ISR();
 #define NUM_PLAYERS  2
 CRGB gLeds[NUM_PLAYERS][NUM_LEDS];  // one strip of leds per player
 int gNumLeds[NUM_PLAYERS];  // the total number of leds actually being lit on a strip
-int gScore[NUM_PLAYERS];    // player's score
-int gPotVal[NUM_PLAYERS];   // value of "handicap" potentiometer
-int gGo1 = 0;               // PLAYER1's go button
-int gGo2 = 0;               // PLAYER2's go button
-int gGo = 0;                // master go control
-int p1_played=0;            // flag if player 1 start sound has been played
-int p2_played=0;            // flag if player 2 start sound has been played 
+volatile int gScore[NUM_PLAYERS];    // player's score
+volatile int gPotVal[NUM_PLAYERS];   // value of "handicap" potentiometer
+volatile int gGo[NUM_PLAYERS];       // go button pressed
+volatile int gReady[NUM_PLAYERS];    // player ready
+volatile int gInner[NUM_PLAYERS];    // inner bumper scored
+volatile int gOuter[NUM_PLAYERS];    // outer bumper scored
+#if DEBUG_SWITCHES
+volatile int gLastInner[NUM_PLAYERS];// shows last bumper pushed regardless of game mode
+volatile int gLastOuter[NUM_PLAYERS];// shows last bumper pushed regardless of game mode
+#endif
+  
+// game variables
+#define ATTRACT_MODE 0
+#define GAME_START_MODE 1
+#define GAME_ON_MODE 2
+#define GAME_OVER_MODE 3
+volatile int gGameMode = ATTRACT_MODE;
+#if DEBUG_SWITCHES
+CRGB gModeColors[4] = {CRGB::Red, CRGB::Yellow, CRGB::Green, CRGB::Blue}; //debug
+#endif
 
 // List of patterns to cycle through.  Each is defined as a separate function below.
  //     typedef void (*SimplePatternList[])(CRGB leds[], int num_leds);
@@ -147,7 +181,6 @@ void bpm(CRGB leds[], int num_leds)
   }
 }
 
-
 void juggle(CRGB leds[], int num_leds) {
   // eight colored dots, weaving in and out of sync with each other
   fill_solid(leds, NUM_LEDS, CRGB::Black);
@@ -159,6 +192,36 @@ void juggle(CRGB leds[], int num_leds) {
     dothue += 32;
   }
 }
+
+#if RACING_LIGHTS
+void countdown_pattern(CRGB leds[], int num_leds) {
+  static CRGB color_bar[5] = {CRGB::Green, CRGB::Yellow, CRGB::Yellow, CRGB::Yellow, CRGB::Red};
+  int num_led_decades = (num_leds + 9) / 10;
+  
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  switch (num_led_decades) {
+  case 0:
+    break;
+  case 1:
+    fill_solid(&leds[0], 50, CRGB::Green);
+    break;
+  case 2:
+    fill_solid(&leds[10], 10, CRGB::Yellow);
+    break;
+  case 3:
+    fill_solid(&leds[20], 10, CRGB::Yellow);
+    break;
+  case 4:
+    fill_solid(&leds[30], 10, CRGB::Yellow);
+    break;
+  case 5:
+    fill_solid(&leds[0], 50, CRGB::Red);
+    break;
+  }
+  return;
+
+}
+#endif // RACING_LIGHTS
 
 void winner(CRGB leds[], int num_leds) {
   // same as bpm but with a faster beat and one direction only
@@ -175,13 +238,8 @@ void winner(CRGB leds[], int num_leds) {
 
 int add_to_score(int score, int delta)
 {
-  // only starts workiing when go buttons are pressed.
   // score can never go below 0 or above SCORE_MAX.
-  // if it reaches SCORE_MAX, it sticks there, and
-  // sets gGo to 0 to prevent other player from scoring.
-  if (!gGo) {
-    return score;
-  }
+  // if it reaches SCORE_MAX, it sticks there.
   if (score == SCORE_MAX) {
     return score;
   }
@@ -191,100 +249,125 @@ int add_to_score(int score, int delta)
   }
   if (score >= SCORE_MAX) {
     score = SCORE_MAX;
-    gGo = 0;
   }
   return score;
 }
 
-void inner1_switch_ISR()
+void inner1_bumper_ISR()
 {
   static unsigned long last_interrupt_time = 0;
   unsigned long interrupt_time = millis();
  
   // debounce the switch
-  if (interrupt_time - last_interrupt_time < 150) {
-    return;
-  }
-  last_interrupt_time = interrupt_time;
- if(gGo)
-  play1=1; 
-  gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_INNER);
-}
-
-void outer1_switch_ISR()
-{
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
- 
-  // debounce the switch
-  if (interrupt_time - last_interrupt_time < 150) {
-    return;
-  }
-  last_interrupt_time = interrupt_time;
-  if(gGo)
-    play0=1;
-  gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_OUTER);
-}
-
-void inner2_switch_ISR()
-{
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
- 
-  // debounce the switch
-  if (interrupt_time - last_interrupt_time < 150) {
-    return;
-  }
-  last_interrupt_time = interrupt_time;
-  if(gGo)
-    play1=1;
-  gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_INNER);
-}
-
-void outer2_switch_ISR()
-{
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
- 
-  // debounce the switch
-  if (interrupt_time - last_interrupt_time < 150) {
-    return;
-  }
-  last_interrupt_time = interrupt_time;
-  if(gGo)
-    play0=1;
-    
-  gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_OUTER);
- 
-}
-
-void go1_switch_ISR()
-{
-  static unsigned long last_interrupt_time = 0;
-  unsigned long interrupt_time = millis();
- 
-  // debounce the switch
-  if (interrupt_time - last_interrupt_time < 150) {
+  if (interrupt_time - last_interrupt_time < DEBOUNCE_BUMPER_IN_MS) {
     return;
   }
   last_interrupt_time = interrupt_time;
   
-  gGo1 = 1;//digitalRead(GO1_SWITCH_PIN);
+#if DEBUG_SWITCHES
+  gLastInner[PLAYER1] = 1; // debug
+#endif
+  if (gGameMode != GAME_ON_MODE) {
+    return;
+  }
+  gInner[PLAYER1] = 1;
 }
 
-void go2_switch_ISR()
+void outer1_bumper_ISR()
 {
   static unsigned long last_interrupt_time = 0;
   unsigned long interrupt_time = millis();
  
   // debounce the switch
-  if (interrupt_time - last_interrupt_time < 150) {
+  if (interrupt_time - last_interrupt_time < DEBOUNCE_BUMPER_IN_MS) {
     return;
   }
   last_interrupt_time = interrupt_time;
-  gGo2 = 1;//digitalRead(GO2_SWITCH_PIN);
+
+#if DEBUG_SWITCHES
+  gLastOuter[PLAYER1] = 1; // debug
+#endif
+  if (gGameMode != GAME_ON_MODE) {
+    return;
+  }
+  gOuter[PLAYER1] = 1;
 }
 
+void inner2_bumper_ISR()
+{
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+ 
+  // debounce the switch
+  if (interrupt_time - last_interrupt_time < DEBOUNCE_BUMPER_IN_MS) {
+    return;
+  }
+  last_interrupt_time = interrupt_time;
+
+#if DEBUG_SWITCHES
+  gLastInner[PLAYER2] = 1; // debug
+#endif
+  if (gGameMode != GAME_ON_MODE) {
+    return;
+  }
+  gInner[PLAYER2] = 1;
+}
+
+void outer2_bumper_ISR()
+{
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+ 
+  // debounce the switch
+  if (interrupt_time - last_interrupt_time < DEBOUNCE_BUMPER_IN_MS) {
+    return;
+  }
+  last_interrupt_time = interrupt_time;
+
+#if DEBUG_SWITCHES
+  gLastOuter[PLAYER2] = 1; // debug
+#endif
+  if (gGameMode != GAME_ON_MODE) {
+    return;
+  }
+  gOuter[PLAYER2] = 1;
+}
+
+void go1_button_ISR()
+{
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+ 
+  // debounce the switch
+  if (interrupt_time - last_interrupt_time < DEBOUNCE_GO_BUTTON_IN_MS) {
+    return;
+  }
+  last_interrupt_time = interrupt_time;
+  
+  if (gReady[PLAYER1]) {
+    return;
+  }
+  gGo[PLAYER1] = 1;//digitalRead(GO1_BUTTON_PIN);
+}
+
+void go2_button_ISR()
+{
+  static unsigned long last_interrupt_time = 0;
+  unsigned long interrupt_time = millis();
+ 
+  // debounce the switch
+  if (interrupt_time - last_interrupt_time < DEBOUNCE_GO_BUTTON_IN_MS) {
+    return;
+  }
+  last_interrupt_time = interrupt_time;
+
+  if (gReady[PLAYER2]) {
+    return;
+  }
+  gGo[PLAYER2] = 1;//digitalRead(GO2_BUTTON_PIN);
+}
+
+#if HANDICAP_DIALS
 void read_pot1_val()
 {
   static long int old_pot_time = 0;
@@ -292,7 +375,7 @@ void read_pot1_val()
   long int pot_time = millis();
   int pot_val = analogRead(POT1_PIN);    // read the value from the sensor
   
-  if (((pot_time - old_pot_time) > 150) && (old_pot_val != pot_val)) {
+  if (((pot_time - old_pot_time) > DEBOUNCE_POT_IN_MS) && (old_pot_val != pot_val)) {
     old_pot_time = pot_time;
     old_pot_val = pot_val;
   }
@@ -306,12 +389,13 @@ void read_pot2_val()
   long int pot_time = millis();
   int pot_val = analogRead(POT2_PIN);    // read the value from the sensor
   
-  if (((pot_time - old_pot_time) > 150) && (old_pot_val != pot_val)) {
+  if (((pot_time - old_pot_time) > DEBOUNCE_POT_IN_MS) && (old_pot_val != pot_val)) {
     old_pot_time = pot_time;
     old_pot_val = pot_val;
   }
   gPotVal[PLAYER2] = pot_val;
 }
+#endif // HANDICAP_DIALS
 
 int score_to_number_of_leds(int score)
 {
@@ -319,7 +403,7 @@ int score_to_number_of_leds(int score)
   if (score == SCORE_MAX) {
     return NUM_SCORE_BAR_LEDS + NUM_STAR_LEDS;
   }
-  return NUM_SCORE_BAR_LEDS * score / SCORE_MAX;
+  return NUM_SCORE_BAR_LEDS * score / (SCORE_MAX - 1);
 }
 
 int score_to_pattern_number(int score)
@@ -331,6 +415,92 @@ int score_to_pattern_number(int score)
   return NUM_PATTERNS * score / SCORE_MAX;
 }
 
+int play_sound(int sound)
+{
+  int pin[NUM_SOUNDS] = {LOW_SCORE_SOUND_PIN, HIGH_SCORE_SOUND_PIN, PLAYER1_SOUND_PIN, PLAYER2_SOUND_PIN, YOU_WIN_SOUND_PIN};
+  unsigned long timeout_in_ms[NUM_SOUNDS] = {200, 200, 1000, 1000, 1000};
+
+  if (gCurrentSoundTimeout) {
+    clear_sound();
+  }  
+  gCurrentSoundPin = pin[sound];
+  digitalWrite(gCurrentSoundPin, LOW);
+  gCurrentSoundTimeout = millis() + timeout_in_ms[sound];
+}
+
+int play_2_sounds(int sound1, int sound2)
+{
+  play_sound(sound1);
+  gNextSound = sound2;
+}
+
+int timeout_sound()
+{
+  if (!gCurrentSoundTimeout) {
+    return 0;
+  }
+  if (millis() < gCurrentSoundTimeout) {
+    return 0;
+  }
+  gCurrentSoundTimeout = 0;
+  digitalWrite(gCurrentSoundPin, HIGH);
+  if (gNextSound >= 0) {
+    play_sound(gNextSound);
+    gNextSound = -1;
+  }
+}
+
+int wait_for_sound()
+{
+  if (gCurrentSoundTimeout) {
+    delay(gCurrentSoundTimeout - millis());
+    gCurrentSoundTimeout = 0;
+  }
+  digitalWrite(gCurrentSoundPin, HIGH);
+  if (gNextSound >= 0) {
+    play_sound(gNextSound);
+    wait_for_sound();
+  }
+}
+
+int clear_sound()
+{
+  if (!gCurrentSoundTimeout) {
+    return 0;
+  }
+  gCurrentSoundTimeout = 0;
+  digitalWrite(gCurrentSoundPin, HIGH);
+  gNextSound = -1;
+}
+
+int reset_buttons()
+{
+  int i;
+  
+  for (i = 0; i < NUM_PLAYERS; i++) {
+    gGo[i] = 0;
+    gReady[i] = 0;
+  }
+}
+
+int reset_bumpers()
+{
+  int i;
+  
+  for (i = 0; i < NUM_PLAYERS; i++) {
+    gInner[i] = 0;
+    gOuter[i] = 0;
+  }
+}
+
+int reset_scores()
+{
+  int i;
+  
+  for (i = 0; i < NUM_PLAYERS; i++) {
+    gScore[i] = 0;
+  }
+}
 
 void setup()
 {
@@ -348,99 +518,199 @@ void setup()
 
   // initialize the leds to black
   FastLED.clear();
- // initialize the switches
-  pinMode(INNER1_SWITCH_PIN, INPUT_PULLUP);
-  pinMode(OUTER1_SWITCH_PIN, INPUT_PULLUP);
-  pinMode(INNER2_SWITCH_PIN, INPUT_PULLUP);
-  pinMode(OUTER2_SWITCH_PIN, INPUT_PULLUP);
-  pinMode(GO1_SWITCH_PIN, INPUT_PULLUP);
-  pinMode(GO2_SWITCH_PIN, INPUT_PULLUP);
-
-pinMode(SOUND0, OUTPUT);
-pinMode(SOUND1, OUTPUT);
-pinMode(SOUND2, OUTPUT);
-pinMode(SOUND3, OUTPUT);
-pinMode(SOUND4, OUTPUT);
-pinMode(SOUND5, OUTPUT);
-pinMode(SOUND6, OUTPUT);
-pinMode(SOUND7, OUTPUT);
-pinMode(SOUND8, OUTPUT);
-pinMode(SOUND9, OUTPUT);
-
-digitalWrite(SOUND0, HIGH);
-digitalWrite(SOUND1, HIGH);
-digitalWrite(SOUND2, HIGH);
-digitalWrite(SOUND3, HIGH);
-digitalWrite(SOUND4, HIGH);
-digitalWrite(SOUND5, HIGH);
-digitalWrite(SOUND6, HIGH);
-digitalWrite(SOUND7, HIGH);
-digitalWrite(SOUND8, HIGH);
-digitalWrite(SOUND9, HIGH);
-
-digitalWrite(SOUND0, LOW);
-delay(500);
-digitalWrite(SOUND0, HIGH);
-digitalWrite(SOUND1, LOW);
-delay(500);
-digitalWrite(SOUND1, HIGH);
-digitalWrite(SOUND2, LOW);
-delay(500);
-digitalWrite(SOUND2, HIGH);
-delay(1000);
-digitalWrite(SOUND3, LOW);
-delay(500);
-digitalWrite(SOUND3, HIGH);
-delay(1000);
-digitalWrite(SOUND4, LOW);
-delay(1000);
-digitalWrite(SOUND4, HIGH);
-  attachInterrupt(digitalPinToInterrupt(INNER1_SWITCH_PIN), inner1_switch_ISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(OUTER1_SWITCH_PIN), outer1_switch_ISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(INNER2_SWITCH_PIN), inner2_switch_ISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(OUTER2_SWITCH_PIN), outer2_switch_ISR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(GO1_SWITCH_PIN), go1_switch_ISR, RISING);
-  attachInterrupt(digitalPinToInterrupt(GO2_SWITCH_PIN), go2_switch_ISR, RISING);
   
-#if 0
-  Serial.begin(9600);
-#endif
+ // initialize the switches
+  pinMode(INNER1_BUMPER_PIN, INPUT_PULLUP);
+  pinMode(OUTER1_BUMPER_PIN, INPUT_PULLUP);
+  pinMode(INNER2_BUMPER_PIN, INPUT_PULLUP);
+  pinMode(OUTER2_BUMPER_PIN, INPUT_PULLUP);
+  pinMode(GO1_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(GO2_BUTTON_PIN, INPUT_PULLUP);
 
+  pinMode(LOW_SCORE_SOUND_PIN, OUTPUT);
+  pinMode(HIGH_SCORE_SOUND_PIN, OUTPUT);
+  pinMode(PLAYER1_SOUND_PIN, OUTPUT);
+  pinMode(PLAYER2_SOUND_PIN, OUTPUT);
+  pinMode(YOU_WIN_SOUND_PIN, OUTPUT);
+  pinMode(SOUND5_PIN, OUTPUT);
+  pinMode(SOUND6_PIN, OUTPUT);
+  pinMode(SOUND7_PIN, OUTPUT);
+  pinMode(SOUND8_PIN, OUTPUT);
+  pinMode(SOUND9_PIN, OUTPUT);
+
+  digitalWrite(LOW_SCORE_SOUND_PIN, HIGH);
+  digitalWrite(HIGH_SCORE_SOUND_PIN, HIGH);
+  digitalWrite(PLAYER1_SOUND_PIN, HIGH);
+  digitalWrite(PLAYER2_SOUND_PIN, HIGH);
+  digitalWrite(YOU_WIN_SOUND_PIN, HIGH);
+  digitalWrite(SOUND5_PIN, HIGH);
+  digitalWrite(SOUND6_PIN, HIGH);
+  digitalWrite(SOUND7_PIN, HIGH);
+  digitalWrite(SOUND8_PIN, HIGH);
+  digitalWrite(SOUND9_PIN, HIGH);
+
+#if SOUND_POST
+  // play all the sounds as a form of POST
+  play_sound(LOW_SCORE_SOUND);
+  wait_for_sound();
+  delay(1000);
+  play_sound(HIGH_SCORE_SOUND);
+  wait_for_sound();
+  delay(1000);
+  play_sound(PLAYER1_SOUND);
+  wait_for_sound();
+  play_sound(PLAYER2_SOUND);
+  wait_for_sound();
+  play_sound(YOU_WIN_SOUND);
+  wait_for_sound();
+#endif // SOUND_POST
+ 
+  attachInterrupt(digitalPinToInterrupt(INNER1_BUMPER_PIN), inner1_bumper_ISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(OUTER1_BUMPER_PIN), outer1_bumper_ISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(INNER2_BUMPER_PIN), inner2_bumper_ISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(OUTER2_BUMPER_PIN), outer2_bumper_ISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(GO1_BUTTON_PIN), go1_button_ISR, RISING);
+  attachInterrupt(digitalPinToInterrupt(GO2_BUTTON_PIN), go2_button_ISR, RISING);
+  
   // initialize the scores
-  gScore[PLAYER1] = 0;
-  gScore[PLAYER2] = 0;
+  reset_buttons();
+  reset_bumpers();
+  reset_scores();
   gNumLeds[PLAYER1] = score_to_number_of_leds(gScore[PLAYER1]);
   gNumLeds[PLAYER2] = score_to_number_of_leds(gScore[PLAYER2]);
   gCurrentPatternNumber[PLAYER1] = score_to_pattern_number(gScore[PLAYER1]);
   gCurrentPatternNumber[PLAYER2] = score_to_pattern_number(gScore[PLAYER2]);
 }
 
-
 // List of patterns to cycle through.  Each is defined as a separate function below.
-      typedef void (*SimplePatternList[])(CRGB leds[], int num_leds);
-      SimplePatternList gPatterns = { rainbow, sinelon, bpm, juggle, confetti, rainbowWithGlitter, winner};
+typedef void (*SimplePatternList[])(CRGB leds[], int num_leds);
+SimplePatternList gPatterns = { rainbow, rainbow, rainbow, rainbow, rainbowWithGlitter, rainbowWithGlitter, juggle };
 
 void loop()
 {
-
-
-  if(play0)
-  {
-    digitalWrite(SOUND0, LOW);
-    delay(200);
-    play0=0;
-    digitalWrite(SOUND0, HIGH);
+  // timeout the sounds
+  timeout_sound();
+  
+  // only process bumpers in game mode
+  if (gGameMode != GAME_ON_MODE) {
+    reset_bumpers();
   }
-  if(play1)
-  {
-        digitalWrite(SOUND1, LOW);
-    delay(200);
-    play1=0;
-    digitalWrite(SOUND1, HIGH);
+  // attract mode pretends to hit bumpers, and lets the players alternate winning
+  if (gGameMode == ATTRACT_MODE) {
+    static int winner = PLAYER1;
+    static int odd = 0;
+      
+    if (gScore[PLAYER1] < SCORE_MAX && gScore[PLAYER2] < SCORE_MAX) {
+      EVERY_N_MILLISECONDS(500) {
+        switch (winner) {
+        case PLAYER1:
+          gOuter[PLAYER1] = 1;
+          if (odd) {
+            gOuter[PLAYER2] = 1;
+          }
+          break;
+        case PLAYER2:
+          if (odd) {
+            gOuter[PLAYER1] = 1;
+          }
+          gOuter[PLAYER2] = 1;
+          break;
+        }
+        odd = !odd;
+      }
+    } else {
+      static unsigned long attract_mode_timeout = 0;
+      if (!attract_mode_timeout) {
+        attract_mode_timeout = millis() + 7000UL;
+      }
+      if (millis() >= attract_mode_timeout) {
+        reset_scores();
+        winner = !winner;
+        attract_mode_timeout = 0;
+      }
+    }
   }
+  // adjust scores based on bumper hits
+  if (gOuter[PLAYER1] || gOuter[PLAYER2]) {
+    if (gOuter[PLAYER1]) {
+      gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_OUTER);
+      gOuter[PLAYER1] = 0;
+    }
+    if (gOuter[PLAYER2]) {
+      gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_OUTER);
+      gOuter[PLAYER2] = 0;
+    }
+    if (gGameMode != ATTRACT_MODE) {
+      play_sound(LOW_SCORE_SOUND);
+    }
+  }
+  if (gInner[PLAYER1] || gInner[PLAYER2]) {
+    if (gInner[PLAYER1]) {
+      gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_INNER);
+      gInner[PLAYER1] = 0;
+    }
+    if (gInner[PLAYER2]) {
+      gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_INNER);      
+      gInner[PLAYER2] = 0;
+    }
+    if (gGameMode != ATTRACT_MODE) {
+      play_sound(HIGH_SCORE_SOUND);
+    }
+  }
+
   // Call the current pattern function once, updating the 'gLeds' arrays
   gPatterns[gCurrentPatternNumber[PLAYER1]](gLeds[PLAYER1], gNumLeds[PLAYER1]);
   gPatterns[gCurrentPatternNumber[PLAYER2]](gLeds[PLAYER2], gNumLeds[PLAYER2]);
+  
+#if RACING_LIGHTS
+  // fancy countdown in game start mode
+  if (gGameMode == GAME_START_MODE) {
+    countdown_pattern(gLeds[PLAYER1], gNumLeds[PLAYER1]);
+    countdown_pattern(gLeds[PLAYER2], gNumLeds[PLAYER2]);
+  }
+#endif // RACING_LIGHTS
+  
+#if DEBUG_SWITCHES
+  // Set bottom led to state of game
+  gLeds[PLAYER1][0] = gModeColors[gGameMode];
+  gLeds[PLAYER2][0] = gModeColors[gGameMode];
+  
+  // Set next led to state of gReady
+  gLeds[PLAYER1][1] = gReady[PLAYER1] ? CRGB::Green : CRGB::Red;
+  gLeds[PLAYER2][1] = gReady[PLAYER2] ? CRGB::Green : CRGB::Red;
+  
+  // Set next led to state of outer bumper
+  gLeds[PLAYER1][2] = gLastOuter[PLAYER1] ? CRGB::Green : CRGB::Red;
+  gLeds[PLAYER2][2] = gLastOuter[PLAYER2] ? CRGB::Green : CRGB::Red;
+  
+  // Set next led to state of inner bumper
+  gLeds[PLAYER1][3] = gLastInner[PLAYER1] ? CRGB::Green : CRGB::Red;
+  gLeds[PLAYER2][3] = gLastInner[PLAYER2] ? CRGB::Green : CRGB::Red;
+  
+  gLeds[PLAYER1][4] = CRGB::Blue;
+  gLeds[PLAYER2][4] = CRGB::Blue;
+  
+  {
+    static unsigned long clear_timeout = 0;
+    
+    if (!clear_timeout) {
+      clear_timeout = millis() + 500UL;
+    }
+    if (millis() >= clear_timeout) {
+      gLastOuter[PLAYER1] = 0;
+      gLastOuter[PLAYER2] = 0;
+      gLastInner[PLAYER1] = 0;
+      gLastInner[PLAYER2] = 0;
+      clear_timeout = 0;
+    }
+  }
+#endif // DEBUG_SWITCHES
+#if DEBUG_POTS
+  fill_solid(gLeds[PLAYER1], 5, CRGB::Red);
+  fill_solid(gLeds[PLAYER2], 5, CRGB::Red);
+  fill_solid(gLeds[PLAYER1], gPotVal[PLAYER1] * 5 / 1024, CRGB::Green);
+  fill_solid(gLeds[PLAYER2], gPotVal[PLAYER2] * 5 / 1024, CRGB::Green);
+#endif
 
   // send the 'gLeds' arrays out to the actual LED strips
   FastLED.show();  
@@ -448,8 +718,11 @@ void loop()
   FastLED.delay(1000/FRAMES_PER_SECOND); 
 
   // do some periodic updates
-  EVERY_N_MILLISECONDS( 20 ) { gHue++; } // slowly cycle the "base color" through the rainbow
-/*
+  EVERY_N_MILLISECONDS( 20 ) {
+    gHue = gHue + 1;
+  } // slowly cycle the "base color" through the rainbow
+
+#if HANDICAP_DIALS
   // reduce score every second based on current value of potentiometer
   // minimum reduction is 0, maximum reduction is 20 points per second
   read_pot1_val();
@@ -460,63 +733,90 @@ void loop()
     gScore[PLAYER1] = add_to_score(gScore[PLAYER1], -delta1);
     gScore[PLAYER2] = add_to_score(gScore[PLAYER2], -delta2);
   }
-  */
+#endif
+
   gNumLeds[PLAYER1] = score_to_number_of_leds(gScore[PLAYER1]);
   gNumLeds[PLAYER2] = score_to_number_of_leds(gScore[PLAYER2]);
 
   gCurrentPatternNumber[PLAYER1] = score_to_pattern_number(gScore[PLAYER1]);
   gCurrentPatternNumber[PLAYER2] = score_to_pattern_number(gScore[PLAYER2]);
   
-#if 0
-  EVERY_N_SECONDS( 1 ) {
-    Serial.println(gScore[PLAYER1]);
-    Serial.println(gScore[PLAYER2]);
-    Serial.print("\n");
-  }
-#endif
-  if(game_over)
-  {
-    game_over=0;
-    delay(500);
-    digitalWrite(SOUND4, LOW);
-    delay(250);
-    digitalWrite(SOUND4, HIGH);
-    delay(5000);
-    gScore[PLAYER1] = 0;
-  gScore[PLAYER2] = 0;
-  gGo1 =0;
-  gGo2 = 0;
-  gGo=0;
-  p1_played=0;
-  p2_played=0;
-  gNumLeds[PLAYER1] = score_to_number_of_leds(gScore[PLAYER1]);
-  gNumLeds[PLAYER2] = score_to_number_of_leds(gScore[PLAYER2]);
-  gCurrentPatternNumber[PLAYER1] = score_to_pattern_number(gScore[PLAYER1]);
-  gCurrentPatternNumber[PLAYER2] = score_to_pattern_number(gScore[PLAYER2]);
-  }
-  if(gScore[PLAYER1]>=SCORE_MAX || gScore[PLAYER2] >= SCORE_MAX)
-  {
-    game_over=1;
-  }
-  // go only when both Go buttons pressed.  Never stop after that.
-  if (!gGo) {
-    gGo = gGo1 && gGo2;
-    if(gGo1&&!p1_played)
-    {
-      digitalWrite(SOUND2, LOW);
-      delay(200);
-      digitalWrite(SOUND2, HIGH);
-      p1_played=1;
+  // if one of the players wins, change the game mode
+  if (gScore[PLAYER1] >= SCORE_MAX || gScore[PLAYER2] >= SCORE_MAX) {
+    switch (gGameMode) {
+    case ATTRACT_MODE:
+      // attract mode takes care of itself
+      break;
+    case GAME_START_MODE:
+      // start mode cannot add points
+      break;
+    case GAME_ON_MODE:
+      play_2_sounds(gScore[PLAYER1] >= SCORE_MAX? PLAYER1_SOUND : PLAYER2_SOUND, YOU_WIN_SOUND);
+      gGameMode = GAME_OVER_MODE;
+      break;
+    case GAME_OVER_MODE:
+      // wait 10 seconds before restarting the game
+      {
+        static unsigned long game_over_timeout = 0;
+        
+        if (!game_over_timeout) {
+          game_over_timeout = millis() + 10000UL;
+        }
+        if (millis() >= game_over_timeout) {
+          gGameMode = ATTRACT_MODE;
+          reset_buttons();
+          reset_bumpers();
+          reset_scores();
+          game_over_timeout = 0;
+        }
+      }
+      break;
     }
-        if(gGo2&&!p2_played)
-    {
-      digitalWrite(SOUND3, LOW);
-      delay(200);
-      digitalWrite(SOUND3, HIGH);
-      p2_played=1;
+  }
+  
+  // go only when both Go buttons pressed.  Never stop after that.
+  if (gGameMode == ATTRACT_MODE || gGameMode == GAME_START_MODE) {
+    if (gGo[PLAYER1] && !gReady[PLAYER1]) {
+      play_sound(PLAYER1_SOUND);
+      gGameMode = GAME_START_MODE;
+      gScore[PLAYER1] = SCORE_MAX - 1;
+      if (!gReady[PLAYER2]) {
+        gScore[PLAYER2] = 0;
+      }
+      gGo[PLAYER1] = 0;
+      gReady[PLAYER1] = 1;
+    }
+    if (gGo[PLAYER2] && !gReady[PLAYER2]) {
+      play_sound(PLAYER2_SOUND);
+      gGameMode = GAME_START_MODE;
+      gScore[PLAYER2] = SCORE_MAX - 1;
+      if (!gReady[PLAYER1]) {
+        gScore[PLAYER1] = 0;
+      }
+      gGo[PLAYER2] = 0;
+      gReady[PLAYER2] = 1;
+    }
+    // if both players are ready, count down the score bars before starting
+    if (gReady[PLAYER1] && gReady[PLAYER2]) {
+      static unsigned long game_start_timeout = 0;
+      
+      EVERY_N_MILLISECONDS(50) {
+        gScore[PLAYER1] = add_to_score(gScore[PLAYER1], SCORE_COUNTDOWN);
+        gScore[PLAYER2] = add_to_score(gScore[PLAYER2], SCORE_COUNTDOWN);
+      }
+      if (gScore[PLAYER1] == 0 || gScore[PLAYER2] == 0) {
+        game_start_timeout = millis();
+      }
+      if (!game_start_timeout) {
+        game_start_timeout = millis() + 5000UL;
+      }
+      if (millis() >= game_start_timeout) {
+        gGameMode = GAME_ON_MODE;
+        reset_buttons();
+        reset_bumpers();
+        reset_scores();
+        game_start_timeout = 0;
+      }
     }
   }
 }
-  
-  
-
